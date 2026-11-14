@@ -1,8 +1,8 @@
 """Indic roman/native-script transliteration around the NLLB translation pivot.
 
-IndicXlit is optional at runtime: if it is unavailable, romanised input is
-left untouched and the caller can rely on the pipeline's quality/confirmation
-gates. NLLB itself does not accept romanised Hindi as hin_Latn.
+IndicXlit supports Roman-to-native and native-to-Roman conversions. It is a
+runtime dependency for romanised Indic input/output; the MT model itself does
+not accept Latin-script Hindi/Bengali/etc. as a target/source language tag.
 """
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ import re
 
 from .langid import XLIT_CODE
 
-# Restrict reverse transliteration to Indic/Arabic-script runs so that English
-# words, numbers, placeholders, URLs and punctuation are not rewritten.
 _INDIC_RUN = re.compile(r"[\u0600-\u06FF\u0900-\u0DFF]+")
 
 
@@ -35,11 +33,11 @@ class Transliterator:
     def _to_native(self, segment: str, code: str) -> str:
         if not segment.strip():
             return segment
-        result = self._engine(code, "en").translit_sentence(segment)
+        result = self._engine(code, "roman").translit_sentence(segment)
         return result[code] if isinstance(result, dict) else result
 
     def transliterate(self, text: str, roman_lang: str) -> str:
-        """Roman-script Indic text -> the language's native script."""
+        """Roman-script Indic text -> native script, keeping placeholders intact."""
         code = XLIT_CODE.get(roman_lang.split("_")[0])
         if code is None:
             return text
@@ -61,14 +59,15 @@ class Transliterator:
         return result or word
 
     def transliterate_to_roman(self, text: str, roman_lang: str) -> str:
-        """Native script -> Roman script, preserving English text and formatting."""
+        """Native script -> Roman script, without rewriting English words or punctuation."""
         code = XLIT_CODE.get(roman_lang.split("_")[0])
         if code is None:
             return text
-        return _INDIC_RUN.sub(
-            lambda match: " ".join(
-                self._to_roman_word(word, code)
-                for word in re.findall(r"[^\s]+", match.group(0))
-            ),
-            text,
-        )
+
+        def convert_run(match: re.Match) -> str:
+            return "".join(
+                self._to_roman_word(part, code) if part.strip() else part
+                for part in re.split(r"(\s+)", match.group(0))
+            )
+
+        return _INDIC_RUN.sub(convert_run, text)
