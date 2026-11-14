@@ -1,30 +1,35 @@
 """Configuration for the JANORA translation layer."""
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 
 @dataclass
 class TranslationConfig:
-    # --- models -----------------------------------------------------------
-    backend: str = "indictrans2"          # "indictrans2" | "nllb"
+    # NLLB-200 is the supported default. IndicTrans2 is an optional legacy backend.
+    backend: str = "nllb"
+    nllb_model: str = "facebook/nllb-200-distilled-600M"
+
+    # Optional IndicTrans2 model IDs, used only with backend="indictrans2".
     indictrans2_indic_en: str = "ai4bharat/indictrans2-indic-en-dist-200M"
     indictrans2_en_indic: str = "ai4bharat/indictrans2-en-indic-dist-200M"
-    nllb_model: str = "facebook/nllb-200-distilled-600M"
-    device: str | None = None             # None -> cuda if available else cpu
-    num_beams: int = 5
+
+    device: str | None = None  # None -> CUDA when available, otherwise CPU
+    num_beams: int = 4
+    batch_size: int = 8
+    max_input_length: int = 512
+    max_new_tokens: int = 256
+    # Kept for the legacy IndicTrans2 backend.
     max_length: int = 256
-    batch_size: int = 16
 
-    # --- input pipeline ---------------------------------------------------
-    transliterate_roman: bool = True      # Hinglish -> Devanagari before MT (ablate this!)
-    langid_min_conf: float = 0.60         # below this -> ask the user to confirm language
+    # Input pipeline
+    transliterate_roman: bool = True
+    langid_min_conf: float = 0.60
 
-    # --- output pipeline --------------------------------------------------
+    # Output pipeline
     round_trip: bool = True
-    round_trip_min_chrf: float = 40.0     # 0-100; CALIBRATE on your validation set
-    indian_grouping: bool = True          # 300000 -> 3,00,000 for rupee amounts
+    round_trip_min_chrf: float = 40.0  # Calibrate on the validation split.
+    indian_grouping: bool = True
 
-    # --- placeholders -----------------------------------------------------
-    # Alphanumeric on purpose: MT models tend to copy unknown Latin tokens
-    # verbatim but mangle brackets. Verify empirically with the masking ablation.
+    # Alphanumeric placeholders are intentionally easy for MT models to copy.
     placeholder_fmt: str = "ZX{kind}{idx}X"
