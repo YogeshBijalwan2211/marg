@@ -174,3 +174,54 @@ def test_translit_degrades_gracefully_without_indicxlit():
     with pytest.warns(UserWarning):
         assert t.transliterate("meri income ZXN1X hai", "hin_Latn") == "meri income ZXN1X hai"
     assert t.available is False
+
+
+# ---- MT drops content from long inputs (seen with IndicTrans2/NLLB on real queries) ------------
+class DropsOnLongInput(MTBackend):
+    """Loses placeholders whenever a piece has more than 8 words, like real MT on run-on queries."""
+    def translate(self, sents, src, tgt):
+        return [re.sub(r"ZX[A-Z]\d+X", "", s) if len(s.split()) > 8 else s for s in sents]
+
+
+def test_split_chunks_balanced_and_keeps_placeholders():
+    from janora.translation.pipeline import split_chunks
+    chunks = split_chunks("a b c d e f g h i j k l m ZXN1X, n o", 6)
+    assert all(len(c.split()) <= 6 for c in chunks)
+    assert sum("ZXN1X" in c for c in chunks) == 1
+    assert " ".join(chunks).replace(",", "").split() == "a b c d e f g h i j k l m ZXN1X n o".split()
+
+
+def test_chunk_retry_recovers_dropped_number():
+    cfg = TranslationConfig(round_trip=False, chunk_words=12, small_chunk_words=6)
+    l = TranslationLayer(cfg, GLOSS, DropsOnLongInput(), LangID(use_indiclid=False), FakeXlit())
+    r = l.to_english("a b c d e f g h i j k आय 3 लाख", forced_lang="hin_Deva")   # one 13-word unpunctuated piece
+    assert not r.issues and "300000" in r.english
+
+
+# ---- repetition loops (seen: Malayalam output "ആൻഡ് ആൻഡ് ആൻഡ് ...") -------------------------
+def test_has_repetition():
+    from janora.translation.pipeline import has_repetition
+    assert has_repetition("under the and and and and and board")
+    assert has_repetition("x a b a b a b a b y")
+    assert not has_repetition("pension shall be provided to workers who are registered")
+    assert not has_repetition("55 55 वर्ष")
+
+
+class LoopsOnLongInput(MTBackend):
+    def translate(self, sents, src, tgt):
+        return [("and " * 6 + s) if len(s.split()) > 8 else s for s in sents]
+
+
+def test_repetition_triggers_chunk_retry_then_recovers():
+    cfg = TranslationConfig(round_trip=False)
+    l = TranslationLayer(cfg, GLOSS, LoopsOnLongInput(), LangID(use_indiclid=False), FakeXlit())
+    r = l.from_english("Pension is paid to workers who are registered under the board after 55 years of age.", "hin_Deva")
+    assert not r.fell_back_to_english and "repetition_loop" not in r.issues
+
+
+def test_persistent_repetition_falls_back_to_english():
+    class AlwaysLoops(MTBackend):
+        def translate(self, sents, src, tgt): return ["and and and and and " + s for s in sents]
+    l = TranslationLayer(TranslationConfig(round_trip=False), GLOSS, AlwaysLoops(), LangID(use_indiclid=False), FakeXlit())
+    r = l.from_english("Pension is paid.", "hin_Deva")
+    assert r.fell_back_to_english and "repetition_loop" in r.issues and r.text == "Pension is paid."

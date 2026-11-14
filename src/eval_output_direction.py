@@ -97,6 +97,8 @@ def main():
     ap.add_argument("--langs", nargs="*", default=TARGETS)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-round-trip", action="store_true")
+    ap.add_argument("--debug", metavar="LANG", help="e.g. ben_Beng: print the RAW masked source and RAW MT output "
+                    "for the first answer (to see WHY a language falls back to English), then exit")
     ap.add_argument("--show", type=int, default=1, help="print this many example answers per language")
     a = ap.parse_args()
 
@@ -104,6 +106,18 @@ def main():
     layer = TranslationLayer(TranslationConfig(backend=a.backend, round_trip=not a.no_round_trip), gl,
                              langid=LangID(use_indiclid=False))
     answers = load_answers(a.split, a.n, a.seed)
+    if a.debug:
+        from janora.translation.pipeline import split_sentences, split_chunks
+        masked = layer.masker.mask(answers[0][1])
+        print("MASKED SOURCE:\n", masked.text, "\n")
+        for name, pieces in (("sentences", split_sentences(masked.text)), ("chunks(12)", split_chunks(masked.text, 12))):
+            out = layer.backend.translate(pieces, "eng_Latn", a.debug)
+            print(f"RAW MT OUTPUT ({name}):")
+            for src, o in zip(pieces, out):
+                print("  src:", src[:150], "\n  out:", o[:200])
+            print("  placeholders found:", dict(layer.masker.placeholders_in(" ".join(out))),
+                  " expected:", sorted(k[2:-1] for k in masked.slots), "\n")
+        return
     print(f"backend={a.backend} split={a.split} answers={len(answers)} "
           f"(e.g. {answers[0][1][:110]!r}...)\n")
     rows = []

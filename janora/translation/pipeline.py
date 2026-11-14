@@ -17,6 +17,7 @@ ENGLISH = "eng_Latn"
 # issue codes (quality gates)
 LOW_LANG_CONF = "low_language_confidence"
 PLACEHOLDER_MISMATCH = "placeholder_mismatch"
+REPETITION = "repetition_loop"
 NUMBER_CHANGED = "number_changed"
 LOW_ROUND_TRIP = "low_round_trip_similarity"
 TEMPLATE_FALLBACK = "template_missing_for_language"
@@ -26,6 +27,36 @@ _SENT = re.compile(r"(?<=[.!?।])\s+")
 
 def split_sentences(text: str) -> list[str]:
     return [s for s in _SENT.split(text.strip()) if s]
+
+
+_CLAUSE = re.compile(r"(?<=[,;،।॥۔.!?])\s+")
+
+
+def split_chunks(text: str, max_words: int = 12) -> list[str]:
+    """Split into short clauses (<= max_words each): sentence ends, commas, then even word windows.
+    Real queries are long, unpunctuated and code-mixed; MT models silently DROP content from such
+    inputs, so the retry translates small pieces instead. Placeholders are single tokens: never cut."""
+    out: list[str] = []
+    for sent in split_sentences(text) or [text]:
+        for part in _CLAUSE.split(sent):
+            words = part.split()
+            if not words:
+                continue
+            n = -(-len(words) // max_words)          # ceil: balanced windows, no 1-word tail
+            size = -(-len(words) // n)
+            out += [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+    return out
+
+
+def has_repetition(text: str, min_run: int = 4) -> bool:
+    """True if a 1-3 word phrase repeats >= min_run times in a row (MT degeneration, e.g. 'and and and and')."""
+    toks = text.split()
+    for n in (1, 2, 3):
+        for i in range(len(toks) - n * min_run + 1):
+            gram = toks[i:i + n]
+            if all(toks[i + k * n:i + (k + 1) * n] == gram for k in range(min_run)):
+                return True
+    return False
 
 
 def chrf_similarity(hyp: str, ref: str) -> float:
@@ -79,18 +110,21 @@ class TranslationLayer:
 
     # ------------------------------------------------------------------ core
     def _mt(self, masked: Masked, text: str, src: str, tgt: str) -> tuple[str, list[str]]:
-        """Translate masked text; verify placeholders; retry once unsplit."""
+        """Translate masked text and verify every placeholder survived. Tiers: sentences, then
+        clause chunks, then small chunks. Content drops are the real failure mode (see README)."""
         issues: list[str] = []
-        attempts = [lambda: " ".join(self.backend.translate(split_sentences(text) or [text], src, tgt)),
-                    lambda: self.backend.translate([text], src, tgt)[0]]
-        out = ""
+        tr = lambda pieces: " ".join(self.backend.translate(pieces, src, tgt))
+        attempts = [lambda: tr(split_sentences(text) or [text]),
+                    lambda: tr(split_chunks(text, self.cfg.chunk_words)),
+                    lambda: tr(split_chunks(text, self.cfg.small_chunk_words))]
+        out, ok = "", False
         for attempt in attempts:
             out = attempt()
             ok, _, _ = self.masker.verify(masked, out)
-            if ok:
+            if ok and not has_repetition(out):
                 break
         else:
-            issues.append(PLACEHOLDER_MISMATCH)
+            issues.append(PLACEHOLDER_MISMATCH if not ok else REPETITION)
         if self.masker.stray_digits(masked, out):
             issues.append(NUMBER_CHANGED)
         return out, issues
@@ -118,7 +152,7 @@ class TranslationLayer:
         translated, mt_issues = self._mt(masked, src_text, mt_src, ENGLISH)
         issues += mt_issues
         english = self.masker.unmask(translated, masked)
-        needs_conf = bool(set(issues) & {PLACEHOLDER_MISMATCH, NUMBER_CHANGED})
+        needs_conf = bool(set(issues) & {PLACEHOLDER_MISMATCH, NUMBER_CHANGED, REPETITION})
         return InputResult(text, lang, normalised, english, issues, needs_conf, ask_language)
 
     def confirm_slot(self, slot: str, value: str, lang: str) -> str:
@@ -135,7 +169,7 @@ class TranslationLayer:
             return OutputResult(answer_en, answer_en, target_lang)
         masked = self.masker.mask(answer_en)
         translated, issues = self._mt(masked, masked.text, ENGLISH, target_lang)
-        if PLACEHOLDER_MISMATCH in issues:           # gate: show original English
+        if PLACEHOLDER_MISMATCH in issues or REPETITION in issues:   # gate: show original English
             return OutputResult(answer_en, answer_en, target_lang, issues,
                                 show_english_alongside=True, fell_back_to_english=True)
         score, show_en = None, False
