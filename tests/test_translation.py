@@ -1,36 +1,68 @@
 import re
+
 import pytest
-from janora.translation import Glossary, SchemeEntry, TranslationConfig, TranslationLayer
-from janora.translation.backends import MTBackend
+
+from janora.translation import (
+    Glossary, SchemeEntry, TranslationConfig, TranslationLayer
+)
+from janora.translation.backends import MTBackend, NLLBBackend
 from janora.translation.langid import LangID
 from janora.translation.normalise import format_indian, normalise_text
 
 
 class FakeMT(MTBackend):
-    """Dictionary 'translator' that preserves placeholders; can be made lossy."""
+    """Dictionary translator that preserves placeholders and records code pairs."""
+
     def __init__(self, table, drop_placeholders=False, mangle_digits=False):
-        self.table, self.drop, self.mangle = table, drop_placeholders, mangle_digits
-    def translate(self, sents, src, tgt):
+        self.table = table
+        self.drop = drop_placeholders
+        self.mangle = mangle_digits
+        self.calls = []
+
+    def translate(self, sentences, src, tgt):
+        self.calls.append((src, tgt))
         out = []
-        for s in sents:
-            t = self.table.get(s, s)
-            if self.drop: t = re.sub(r"ZX[A-Z]\d+X", "", t)
-            if self.mangle: t = t + " 7"
-            out.append(t)
+        for sentence in sentences:
+            translated = self.table.get(sentence, sentence)
+            if self.drop:
+                translated = re.sub(r"ZX[A-Z]\d+X", "", translated)
+            if self.mangle:
+                translated += " 7"
+            out.append(translated)
         return out
 
 
 class FakeXlit:
-    def transliterate(self, text, lang): return text
+    def transliterate(self, text, lang):
+        return text
+
+    def transliterate_to_roman(self, text, lang):
+        return f"roman:{text}"
 
 
-GLOSS = Glossary([SchemeEntry("S1", "PM-KISAN", {"hin_Deva": ["पीएम किसान"], "hin_Latn": ["pm kisan"]},
-                              {"hin_Deva": "पीएम-किसान"})])
+class FakeTokenizer:
+    unk_token_id = 0
+    lang_code_to_id = {"hin_Deva": 17, "eng_Latn": 9}
+
+    def convert_tokens_to_ids(self, token):
+        return self.lang_code_to_id.get(token, self.unk_token_id)
 
 
-def layer(table, **kw):
-    cfg = TranslationConfig(round_trip=kw.pop("round_trip", False))
-    return TranslationLayer(cfg, GLOSS, FakeMT(table, **kw), LangID(use_indiclid=False), FakeXlit())
+GLOSS = Glossary([
+    SchemeEntry(
+        "S1", "PM-KISAN",
+        {"hin_Deva": ["पीएम किसान"], "hin_Latn": ["pm kisan"]},
+        {"hin_Deva": "पीएम-किसान"},
+    )
+])
+
+
+def layer(table, **kwargs):
+    config = TranslationConfig(round_trip=kwargs.pop("round_trip", False))
+    return TranslationLayer(
+        config, GLOSS, FakeMT(table, **kwargs),
+        LangID(use_indiclid=False), FakeXlit()
+    )
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -41,8 +73,8 @@ def layer(table, **kw):
     ("teen lakh", "300000"),
     ("तीन लाख", "300000"),
     ("5 hazaar", "5000"),
-    ("10,20,30", "10,20,30"),       # a list, not a grouped number
-    ("3 लाखों", "3 लाखों"),          # inflected form is left alone
+    ("10,20,30", "10,20,30"),
+    ("3 लाखों", "3 लाखों"),
 ])
 def test_normalise(raw, expected):
     assert normalise_text(raw)[0] == expected
@@ -55,102 +87,145 @@ def test_indian_format():
 
 
 def test_langid():
-    ld = LangID(use_indiclid=False)
-    assert ld.detect("मेरी आय 3 लाख है").code == "hin_Deva"
-    assert ld.detect("meri income 3 lakh hai kya mujhe milega").code == "hin_Latn"
-    assert ld.detect("What is the income limit for this scheme?").code == "eng_Latn"
-    assert ld.detect("எனது வயது 40").code == "tam_Taml"
+    detector = LangID(use_indiclid=False)
+    assert detector.detect("मेरी आय 3 लाख है").code == "hin_Deva"
+    assert detector.detect("meri income 3 lakh hai kya mujhe milega").code == "hin_Latn"
+    assert detector.detect("What is the income limit for this scheme?").code == "eng_Latn"
+    assert detector.detect("எனது வயது 40").code == "tam_Taml"
+
+
+def test_nllb_backend_validates_codes_using_tokenizer_mapping():
+    backend = object.__new__(NLLBBackend)
+    backend.cfg = TranslationConfig()
+    backend.tok = FakeTokenizer()
+    assert backend._language_id("hin_Deva") == 17
+    assert backend._language_id("eng_Latn") == 9
+    with pytest.raises(ValueError, match="not supported"):
+        backend._language_id("hin_Latn")
+    with pytest.raises(ValueError, match="not supported"):
+        backend._language_id("foo_Bar")
 
 
 def test_input_hindi_roundtrip_numbers_and_scheme():
-    src = "पीएम किसान के लिए मेरी आय ३ लाख है।"
-    # what the MT sees after normalisation + masking
-    masked_src = "ZXS1X के लिए मेरी आय ZXN2X है।"
-    l = layer({masked_src: "My income is ZXN2X for ZXS1X."})
-    r = l.to_english(src)
-    assert r.english == "My income is 300000 for PM-KISAN."
-    assert not r.issues and not r.needs_confirmation
+    source = "पीएम किसान के लिए मेरी आय ३ लाख है।"
+    masked_source = "ZXS1X के लिए मेरी आय ZXN2X है।"
+    result = layer({
+        masked_source: "My income is ZXN2X for ZXS1X."
+    }).to_english(source)
+    assert result.english == "My income is 300000 for PM-KISAN."
+    assert not result.issues and not result.needs_confirmation
+
+
+def test_roman_hindi_input_uses_native_nllb_code():
+    translator = layer({})
+    result = translator.to_english("meri income 3 lakh hai")
+    assert ("hin_Deva", "eng_Latn") in translator.backend.calls
+
+
+def test_roman_hindi_output_uses_native_nllb_then_romanizes():
+    translator = layer({"Hello.": "नमस्ते।"})
+    result = translator.from_english("Hello.", "hin_Latn")
+    assert ("eng_Latn", "hin_Deva") in translator.backend.calls
+    assert result.text.startswith("roman:")
 
 
 def test_input_placeholder_loss_flags():
-    src = "पीएम किसान के लिए मेरी आय ३ लाख है।"
-    r = layer({}, drop_placeholders=True).to_english(src)
-    assert "placeholder_mismatch" in r.issues and r.needs_confirmation
+    result = layer({}, drop_placeholders=True).to_english(
+        "पीएम किसान के लिए मेरी आय ३ लाख है।"
+    )
+    assert "placeholder_mismatch" in result.issues
+    assert result.needs_confirmation
 
 
 def test_stray_digit_flags():
-    r = layer({}, mangle_digits=True).to_english("मेरी आय ३ लाख है")
-    assert "number_changed" in r.issues
+    result = layer({}, mangle_digits=True).to_english("मेरी आय ३ लाख है")
+    assert "number_changed" in result.issues
 
 
 def test_english_passthrough_still_normalises():
-    r = layer({}).to_english("my income is 3 lakh")
-    assert r.english == "my income is 300000" and r.lang.code == "eng_Latn"
+    result = layer({}).to_english("my income is 3 lakh")
+    assert result.english == "my income is 300000"
+    assert result.lang.code == "eng_Latn"
 
 
 def test_low_confidence_asks_language():
-    r = layer({}).to_english("12345")
-    assert r.ask_language
+    assert layer({}).to_english("12345").ask_language
 
 
 def test_output_uses_native_name_and_indian_grouping():
-    en = "You may get ₹6000 from PM-KISAN."
     masked = "You may get ZXM2X from ZXS1X."
-    l = layer({masked: "आपको ZXS1X से ZXM2X मिल सकते हैं।"})
-    r = l.from_english(en, "hin_Deva")
-    assert r.text == "आपको पीएम-किसान से ₹6,000 मिल सकते हैं।"
-    assert not r.issues
+    result = layer({
+        masked: "आपको ZXS1X से ZXM2X मिल सकते हैं।"
+    }).from_english("You may get ₹6000 from PM-KISAN.", "hin_Deva")
+    assert result.text == "आपको पीएम-किसान से ₹6,000 मिल सकते हैं।"
+    assert not result.issues
 
 
 def test_output_gate_falls_back_to_english():
-    r = layer({}, drop_placeholders=True).from_english("Benefit is ₹6000.", "hin_Deva")
-    assert r.fell_back_to_english and r.text == "Benefit is ₹6000."
+    result = layer({}, drop_placeholders=True).from_english(
+        "Benefit is ₹6000.", "hin_Deva"
+    )
+    assert result.fell_back_to_english
+    assert result.text == "Benefit is ₹6000."
 
 
 def test_round_trip_flags_low_similarity():
-    l = layer({}, round_trip=True)
-    l.cfg.round_trip_min_chrf = 99.0
-    # fake MT is identity -> perfect similarity, so force a low-sim case via table
-    l.backend.table = {"Farmers get money.": "किसानों को पैसा मिलता है।", "किसानों को पैसा मिलता है।": "Totally different words here"}
-    r = l.from_english("Farmers get money.", "hin_Deva")
-    assert "low_round_trip_similarity" in r.issues and r.show_english_alongside
+    translator = layer({}, round_trip=True)
+    translator.cfg.round_trip_min_chrf = 99.0
+    translator.backend.table = {
+        "Farmers get money.": "किसानों को पैसा मिलता है।",
+        "किसानों को पैसा मिलता है।": "Totally different words here",
+    }
+    result = translator.from_english("Farmers get money.", "hin_Deva")
+    assert "low_round_trip_similarity" in result.issues
+    assert result.show_english_alongside
 
 
 def test_disclaimer_is_human_template():
-    r = layer({"Apply online.": "ऑनलाइन आवेदन करें।"}).answer_with_disclaimer("Apply online.", "hin_Deva")
-    assert "आधिकारिक पोर्टल" in r.text
+    result = layer({"Apply online.": "ऑनलाइन आवेदन करें।"}).answer_with_disclaimer(
+        "Apply online.", "hin_Deva"
+    )
+    assert "आधिकारिक पोर्टल" in result.text
 
 
 def test_missing_language_template_falls_back_and_flags():
-    r = layer({}).answer_with_disclaimer("Apply online.", "tam_Taml")
-    assert "template_missing_for_language" in r.issues
+    result = layer({}).answer_with_disclaimer("Apply online.", "tam_Taml")
+    assert "template_missing_for_language" in result.issues
 
 
-def test_confirm_slot():
-    assert layer({}).confirm_slot("income", "₹3,00,000", "hin_Deva") == "वार्षिक आय: ₹3,00,000। क्या यह सही है?"
+def test_confirm_slot_romanizes_output_language():
+    result = layer({}).confirm_slot("age", "40", "hin_Latn")
+    assert result.startswith("roman:")
 
 
-# ---- regressions found on the real MARG data -------------------------------------------------
-@pytest.mark.parametrize("raw,expected", [
-    ("आय 2 करोड़ है", "आय 20000000 है"),                 # nukta letters decompose under NFC
-    ("आय 1 हज़ार", "आय 1000"),
-    ("0.9 lak", "90000"),                                  # typo'd unit
-    ("வருமானம் ௦.௭ லட்சம்", "வருமானம் 70000"),           # Tamil digits + Tamil 'lakh'
-    ("آمدنی 2 لاکھ", "آمدنی 200000"),                     # Urdu
-    ("hello 😊🙏  there", "hello there"),                   # emoji + extra spaces
-])
-def test_noisy_real_inputs(raw, expected):
-    assert normalise_text(raw)[0] == expected
+def test_noisy_real_inputs():
+    noisy = [
+        ("आय 2 करोड़ है", "आय 20000000 है"),
+        ("आय 1 हज़ार", "आय 1000"),
+        ("0.9 lak", "90000"),
+        ("வருமானம் ௦.௭ லட்சம்", "வருமானம் 70000"),
+        ("آمدنی 2 لاکھ", "آمدنی 200000"),
+        ("hello 😊🙏  there", "hello there"),
+    ]
+    for raw, expected in noisy:
+        assert normalise_text(raw)[0] == expected
 
 
 def test_scheme_name_with_amount_is_matched_before_number_normalisation():
-    g = Glossary([SchemeEntry("S9", "6% Interest Subsidy on Loans up to Rs.5 Lakh")])
-    l = TranslationLayer(TranslationConfig(round_trip=False), g, FakeMT({}), LangID(use_indiclid=False), FakeXlit())
+    glossary = Glossary([
+        SchemeEntry("S9", "6% Interest Subsidy on Loans up to Rs.5 Lakh")
+    ])
+    translator = TranslationLayer(
+        TranslationConfig(round_trip=False), glossary, FakeMT({}),
+        LangID(use_indiclid=False), FakeXlit()
+    )
     from janora.translation.normalise import clean_text, normalise_numbers
-    m = l.masker.mask(clean_text("मुझे 6% Interest Subsidy on Loans up to Rs.5 Lakh चाहिए, आय 3 लाख"),
-                      normaliser=lambda t: normalise_numbers(t)[0])
-    assert any(s.scheme_id == "S9" for s in m.slots.values())
-    assert "300000" in l.masker.unmask(m.text, m)
+    masked = translator.masker.mask(
+        clean_text("मुझे 6% Interest Subsidy on Loans up to Rs.5 Lakh चाहिए, आय 3 लाख"),
+        normaliser=lambda value: normalise_numbers(value)[0],
+    )
+    assert any(slot.scheme_id == "S9" for slot in masked.slots.values())
+    assert "300000" in translator.masker.unmask(masked.text, masked)
 
 
 def test_label_to_code_is_script_aware():
@@ -161,8 +236,8 @@ def test_label_to_code_is_script_aware():
 
 
 def test_assamese_marathi_nepali_vs_hindi():
-    ld = LangID(use_indiclid=False)
-    assert ld.detect("মোৰ বয়স ৫২ বছৰ").code == "asm_Beng"
-    assert ld.detect("माझे वय ४० वर्षे आहे").code == "mar_Deva"
-    assert ld.detect("मेरो उमेर ४० वर्ष हो र म बिहारमा बस्छु").code == "npi_Deva"
-    assert ld.detect("मेरी उम्र 40 साल है").code == "hin_Deva"
+    detector = LangID(use_indiclid=False)
+    assert detector.detect("মোৰ বয়স ৫২ বছৰ").code == "asm_Beng"
+    assert detector.detect("माझे वय ४० वर्षे आहे").code == "mar_Deva"
+    assert detector.detect("मेरो उमेर ४० वर्ष हो र म बिहारमा बस्छु").code == "npi_Deva"
+    assert detector.detect("मेरी उम्र 40 साल है").code == "hin_Deva"

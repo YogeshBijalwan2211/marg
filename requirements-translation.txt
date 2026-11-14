@@ -1,13 +1,11 @@
-# core
-transformers>=4.40
+# JANORA translation dependencies (NLLB-200 default)
+# Install a PyTorch wheel suitable for your CPU/CUDA runtime if needed.
 torch
-sacrebleu
+transformers>=4.40,<5
 sentencepiece
-# IndicTrans2 pre/post-processing
-IndicTransToolkit            # pip install git+https://github.com/VarunGumma/IndicTransToolkit if PyPI is stale
-# transliteration (Hinglish -> Devanagari)
+sacrebleu
+sacremoses
+# Roman/native-script conversion for Indic languages (recommended for Hinglish).
 ai4bharat-transliteration
-# language ID: install IndicLID from https://github.com/AI4Bharat/IndicLID (optional; heuristic fallback exists)
-# optional metrics
-# unbabel-comet
+# IndicLID is optional; langid.py falls back to a built-in heuristic.
 pytest

@@ -1,19 +1,11 @@
 """Evaluate the translation layer on this repo's query splits.
 
-Run from the repo root.
-
-  # 1) OFFLINE checks, no models needed (language ID, number normalisation, glossary masking):
+Examples:
   python src/eval_translation.py offline --split val
-
-  # 2) END-TO-END check with a real MT model (needs GPU/CPU + model downloads):
-  python src/eval_translation.py mt --split val --backend indictrans2 --limit 300
   python src/eval_translation.py mt --split val --backend nllb --limit 300
-  python src/eval_translation.py mt --split val --backend indictrans2 --no-translit   # ablation
+  python src/eval_translation.py mt --split val --backend nllb --no-translit --limit 300
 
-Golden rule from the project: tune on `val`; run `--split test` ONCE at the end.
-
-The rows carry `true_profile` (age, income, state ...), so translation quality is measured as
-"did the user's facts survive into the English text?" (slot preservation), per language.
+Tune on validation data and run the test split only once for the final report.
 """
 import argparse
 import collections
@@ -29,105 +21,149 @@ from janora.translation.normalise import clean_text, normalise_numbers  # noqa: 
 
 
 def load(split):
-    with open(f"data/splits/{split}.jsonl", encoding="utf-8") as f:
-        return [json.loads(l) for l in f if l.strip()]
+    with open(f"data/splits/{split}.jsonl", encoding="utf-8") as file:
+        return [json.loads(line) for line in file if line.strip()]
 
 
 def facts_present(text, profile, missing=()):
-    """Which STATED profile facts appear in `text` (already number-normalised)? age/income only.
-    Fields listed in the row's `missing_fields` were never said by the user, so they are skipped."""
-    nums = set(re.findall(r"\d+(?:\.\d+)?", text.replace(",", "")))
-    res = {}
+    """Check whether stated age/income facts survive translation."""
+    numbers = set(re.findall(r"\d+(?:\.\d+)?", text.replace(",", "")))
+    result = {}
     if profile.get("age") is not None and "age" not in missing:
-        res["age"] = str(profile["age"]) in nums
-    # `missing_fields` does not reliably list income, so score income only on rows where the text
-    # actually contains a large figure (>= 1000); then ask: is that figure the true income?
-    if profile.get("income") is not None and any(float(x) >= 1000 for x in nums):
-        res["income"] = str(int(profile["income"])) in nums
-    return res
+        result["age"] = str(profile["age"]) in numbers
+    if profile.get("income") is not None and any(float(n) >= 1000 for n in numbers):
+        result["income"] = str(int(profile["income"])) in numbers
+    return result
 
 
-def pct(a, b):
-    return round(100 * a / b, 1) if b else None
+def pct(numerator, denominator):
+    return round(100 * numerator / denominator, 1) if denominator else None
 
 
 def offline(args):
-    rows = [r for r in load(args.split) if r.get("row_type") != "offtopic"]
-    gl = Glossary.from_json("data/registry/glossary.json")
-    ld = LangID(use_indiclid=not args.heuristic_langid)
-    layer = TranslationLayer(TranslationConfig(), gl, langid=ld)
-    by = collections.defaultdict(lambda: collections.Counter())
+    rows = [row for row in load(args.split) if row.get("row_type") != "offtopic"]
+    glossary = Glossary.from_json("data/registry/glossary.json")
+    detector = LangID(use_indiclid=not args.heuristic_langid)
+    layer = TranslationLayer(TranslationConfig(), glossary, langid=detector)
+    by_language = collections.defaultdict(collections.Counter)
     confusions = collections.Counter()
-    for r in rows:
-        lang, gold = r["language"], label_to_code(r["language"], r["query"])
-        c = by[lang]
-        c["n"] += 1
-        c["roman"] += gold.endswith("_Latn") and not gold.startswith("eng")
-        pred = ld.detect(r["query"]).code
-        c["langid_ok"] += pred == gold
-        if pred != gold:
-            confusions[(gold, pred)] += 1
-        masked = layer.masker.mask(clean_text(r["query"]), normaliser=lambda t: normalise_numbers(t)[0])
-        normalised = layer.masker.unmask(masked.text, masked)
-        for k, ok in facts_present(normalised, r.get("true_profile") or {}, r.get("missing_fields") or []).items():
-            c[f"{k}_n"] += 1
-            c[f"{k}_ok"] += ok
-        if r["row_type"] == "named" and r.get("target_slug"):
-            c["named_n"] += 1
-            c["named_masked"] += any(s.scheme_id == r["target_slug"] for s in masked.slots.values())
-    print(f"split={args.split}   (offtopic rows excluded)")
-    print("langID is script-aware: a query typed in Latin letters counts as <lang>_Latn.")
+
+    for row in rows:
+        language = row["language"]
+        gold = label_to_code(language, row["query"])
+        counts = by_language[language]
+        counts["n"] += 1
+        counts["roman"] += gold.endswith("_Latn") and not gold.startswith("eng")
+        prediction = detector.detect(row["query"]).code
+        counts["langid_ok"] += prediction == gold
+        if prediction != gold:
+            confusions[(gold, prediction)] += 1
+
+        masked = layer.masker.mask(
+            clean_text(row["query"]),
+            normaliser=lambda value: normalise_numbers(value)[0],
+        )
+        restored = layer.masker.unmask(masked.text, masked)
+        for key, passed in facts_present(
+            restored, row.get("true_profile") or {}, row.get("missing_fields") or []
+        ).items():
+            counts[f"{key}_n"] += 1
+            counts[f"{key}_ok"] += passed
+
+        if row["row_type"] == "named" and row.get("target_slug"):
+            counts["named_n"] += 1
+            counts["named_masked"] += any(
+                slot.scheme_id == row["target_slug"] for slot in masked.slots.values()
+            )
+
+    print(f"split={args.split} (off-topic rows excluded)")
     print(f"{'language':10} {'n':>5} {'langID%':>8} {'age%':>6} {'income%':>8} {'named->glossary%':>17}")
-    tot = collections.Counter()
-    for lang in sorted(by):
-        c = by[lang]; tot.update(c)
-        print(f"{lang:10} {c['n']:5} {pct(c['langid_ok'], c['n']):8} {pct(c['age_ok'], c['age_n']):6} "
-              f"{pct(c['income_ok'], c['income_n']):8} {str(pct(c['named_masked'], c['named_n'])):>17}")
-    print(f"{'ALL':10} {tot['n']:5} {pct(tot['langid_ok'], tot['n']):8} {pct(tot['age_ok'], tot['age_n']):6} "
-          f"{pct(tot['income_ok'], tot['income_n']):8} {str(pct(tot['named_masked'], tot['named_n'])):>17}")
-    print(f"romanised non-English/non-Hinglish-style rows: {tot['roman']} of {tot['n']}")
-    print("\ntop language-ID confusions (gold -> predicted):")
-    for (g, p), n in confusions.most_common(8):
-        print(f"  {g} -> {p}: {n}")
+    total = collections.Counter()
+    for label in sorted(by_language):
+        counts = by_language[label]
+        total.update(counts)
+        print(
+            f"{label:10} {counts['n']:5} {pct(counts['langid_ok'], counts['n']):8} "
+            f"{pct(counts['age_ok'], counts['age_n']):6} "
+            f"{pct(counts['income_ok'], counts['income_n']):8} "
+            f"{str(pct(counts['named_masked'], counts['named_n'])):>17}"
+        )
+    print(
+        f"{'ALL':10} {total['n']:5} {pct(total['langid_ok'], total['n']):8} "
+        f"{pct(total['age_ok'], total['age_n']):6} "
+        f"{pct(total['income_ok'], total['income_n']):8} "
+        f"{str(pct(total['named_masked'], total['named_n'])):>17}"
+    )
+    print(f"Romanised non-English rows: {total['roman']} of {total['n']}")
+    print("\nTop language-ID confusions (gold -> predicted):")
+    for (gold, predicted), count in confusions.most_common(8):
+        print(f"  {gold} -> {predicted}: {count}")
 
 
 def mt(args):
-    rows = [r for r in load(args.split) if r["row_type"] != "offtopic" and r["language"] != "english"]
+    rows = [
+        row for row in load(args.split)
+        if row["row_type"] != "offtopic" and row["language"] != "english"
+    ]
     if args.limit:
-        rows = rows[: args.limit]
-    gl = Glossary.from_json("data/registry/glossary.json")
-    cfg = TranslationConfig(backend=args.backend, transliterate_roman=not args.no_translit)
-    layer = TranslationLayer(cfg, gl, langid=LangID(use_indiclid=False))
-    by = collections.defaultdict(collections.Counter)
-    for r in rows:
-        res = layer.to_english(r["query"], forced_lang=label_to_code(r["language"], r["query"]))
-        c = by[r["language"]]
-        c["n"] += 1
-        c["gate_fail"] += bool(res.issues)
-        # compare facts in the ENGLISH output with the gold profile
-        eng, _ = normalise_numbers(res.english)
-        for k, ok in facts_present(eng, r.get("true_profile") or {}, r.get("missing_fields") or []).items():
-            c[f"{k}_n"] += 1
-            c[f"{k}_ok"] += ok
-        st = (r.get("true_profile") or {}).get("state")
-        if st:
-            c["state_n"] += 1
-            c["state_ok"] += st.lower() in res.english.lower()
-    print(f"backend={args.backend} translit={not args.no_translit} split={args.split}")
+        rows = rows[:args.limit]
+
+    glossary = Glossary.from_json("data/registry/glossary.json")
+    config = TranslationConfig(transliterate_roman=not args.no_translit)
+    layer = TranslationLayer(config, glossary, langid=LangID(use_indiclid=False))
+    by_language = collections.defaultdict(collections.Counter)
+
+    for row in rows:
+        result = layer.to_english(
+            row["query"],
+            forced_lang=label_to_code(row["language"], row["query"]),
+        )
+        counts = by_language[row["language"]]
+        counts["n"] += 1
+        counts["gate_fail"] += bool(result.issues)
+
+        english, _ = normalise_numbers(result.english)
+        for key, passed in facts_present(
+            english, row.get("true_profile") or {}, row.get("missing_fields") or []
+        ).items():
+            counts[f"{key}_n"] += 1
+            counts[f"{key}_ok"] += passed
+
+        state = (row.get("true_profile") or {}).get("state")
+        if state:
+            counts["state_n"] += 1
+            counts["state_ok"] += state.lower() in result.english.lower()
+
+    print(
+        f"backend=nllb translit={not args.no_translit} split={args.split}"
+    )
     print(f"{'language':10} {'n':>5} {'age%':>6} {'income%':>8} {'state%':>7} {'gate-fail%':>11}")
-    for lang in sorted(by):
-        c = by[lang]
-        print(f"{lang:10} {c['n']:5} {pct(c['age_ok'], c['age_n']):6} {pct(c['income_ok'], c['income_n']):8} "
-              f"{pct(c['state_ok'], c['state_n']):7} {pct(c['gate_fail'], c['n']):11}")
+    for label in sorted(by_language):
+        counts = by_language[label]
+        print(
+            f"{label:10} {counts['n']:5} {pct(counts['age_ok'], counts['age_n']):6} "
+            f"{pct(counts['income_ok'], counts['income_n']):8} "
+            f"{pct(counts['state_ok'], counts['state_n']):7} "
+            f"{pct(counts['gate_fail'], counts['n']):11}"
+        )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("offline"); a.add_argument("--split", default="val")
-    a.add_argument("--heuristic-langid", action="store_true", help="skip IndicLID, use built-in heuristic")
-    m = sub.add_parser("mt"); m.add_argument("--split", default="val")
-    m.add_argument("--backend", default="indictrans2", choices=["indictrans2", "nllb"])
-    m.add_argument("--limit", type=int, default=0); m.add_argument("--no-translit", action="store_true")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+
+    offline_parser = subparsers.add_parser("offline")
+    offline_parser.add_argument("--split", default="val")
+    offline_parser.add_argument(
+        "--heuristic-langid", action="store_true",
+        help="skip IndicLID and use the built-in heuristic",
+    )
+
+    mt_parser = subparsers.add_parser("mt")
+    mt_parser.add_argument("--split", default="val")
+    mt_parser.add_argument("--backend", default="nllb", choices=["nllb"])
+    mt_parser.add_argument("--limit", type=int, default=0)
+    mt_parser.add_argument("--no-translit", action="store_true")
+
+    args = parser.parse_args()
     offline(args) if args.cmd == "offline" else mt(args)
