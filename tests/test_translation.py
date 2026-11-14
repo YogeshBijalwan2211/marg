@@ -166,3 +166,11 @@ def test_assamese_marathi_nepali_vs_hindi():
     assert ld.detect("माझे वय ४० वर्षे आहे").code == "mar_Deva"
     assert ld.detect("मेरो उमेर ४० वर्ष हो र म बिहारमा बस्छु").code == "npi_Deva"
     assert ld.detect("मेरी उम्र 40 साल है").code == "hin_Deva"
+
+
+def test_translit_degrades_gracefully_without_indicxlit():
+    from janora.translation.translit import Transliterator
+    t = Transliterator()
+    with pytest.warns(UserWarning):
+        assert t.transliterate("meri income ZXN1X hai", "hin_Latn") == "meri income ZXN1X hai"
+    assert t.available is False

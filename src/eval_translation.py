@@ -18,6 +18,7 @@ The rows carry `true_profile` (age, income, state ...), so translation quality i
 import argparse
 import collections
 import json
+import random
 import re
 import sys
 from pathlib import Path
@@ -93,17 +94,24 @@ def offline(args):
 
 def mt(args):
     rows = [r for r in load(args.split) if r["row_type"] != "offtopic" and r["language"] != "english"]
-    if args.limit:
+    if args.limit:                       # file is sorted by language: sample randomly, not rows[:N]
+        random.Random(args.seed).shuffle(rows)
         rows = rows[: args.limit]
+    all_rows = load(args.split)
     gl = Glossary.from_json("data/registry/glossary.json")
     cfg = TranslationConfig(backend=args.backend, transliterate_roman=not args.no_translit)
     layer = TranslationLayer(cfg, gl, langid=LangID(use_indiclid=False))
     by = collections.defaultdict(collections.Counter)
+    shown = 0
     for r in rows:
         res = layer.to_english(r["query"], forced_lang=label_to_code(r["language"], r["query"]))
         c = by[r["language"]]
         c["n"] += 1
         c["gate_fail"] += bool(res.issues)
+        if res.issues and shown < args.show_failures:
+            shown += 1
+            print(f"\n[gate fail] {r['language']} issues={res.issues}\n  query  : {r['query'][:200]}"
+                  f"\n  english: {res.english[:200]}")
         # compare facts in the ENGLISH output with the gold profile
         eng, _ = normalise_numbers(res.english)
         for k, ok in facts_present(eng, r.get("true_profile") or {}, r.get("missing_fields") or []).items():
@@ -113,6 +121,11 @@ def mt(args):
         if st:
             c["state_n"] += 1
             c["state_ok"] += st.lower() in res.english.lower()
+    eng = [r for r in all_rows if r["language"] == "english" and r["row_type"] != "offtopic"
+           and (r.get("true_profile") or {}).get("state")]
+    base = pct(sum(r["true_profile"]["state"].lower() in r["query"].lower() for r in eng), len(eng))
+    print(f"\n(state% ceiling: in the {len(eng)} English rows, which need no translation, the state name "
+          f"appears in the text only {base}% of the time because of typos/abbreviations)")
     print(f"backend={args.backend} translit={not args.no_translit} split={args.split}")
     print(f"{'language':10} {'n':>5} {'age%':>6} {'income%':>8} {'state%':>7} {'gate-fail%':>11}")
     for lang in sorted(by):
@@ -128,6 +141,9 @@ if __name__ == "__main__":
     a.add_argument("--heuristic-langid", action="store_true", help="skip IndicLID, use built-in heuristic")
     m = sub.add_parser("mt"); m.add_argument("--split", default="val")
     m.add_argument("--backend", default="indictrans2", choices=["indictrans2", "nllb"])
-    m.add_argument("--limit", type=int, default=0); m.add_argument("--no-translit", action="store_true")
+    m.add_argument("--limit", type=int, default=0, help="random sample size; 0 = all non-English rows")
+    m.add_argument("--seed", type=int, default=0)
+    m.add_argument("--show-failures", type=int, default=0, help="print N rows that tripped a quality gate")
+    m.add_argument("--no-translit", action="store_true")
     args = ap.parse_args()
     offline(args) if args.cmd == "offline" else mt(args)
