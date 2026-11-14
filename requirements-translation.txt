@@ -1,13 +1,11 @@
-# core
-transformers>=4.40
+# JANORA translation dependencies (NLLB-200 default)
+# Install a PyTorch build appropriate for your Colab/local CUDA runtime first.
 torch
-sacrebleu
+transformers>=4.40,<5
 sentencepiece
-# IndicTrans2 pre/post-processing
-IndicTransToolkit            # pip install git+https://github.com/VarunGumma/IndicTransToolkit if PyPI is stale
-# transliteration (Hinglish -> Devanagari)
+sacrebleu
+sacremoses
+# Romanised Indian-language transliteration (optional but recommended for Hinglish)
 ai4bharat-transliteration
-# language ID: install IndicLID from https://github.com/AI4Bharat/IndicLID (optional; heuristic fallback exists)
-# optional metrics
-# unbabel-comet
+# IndicLID is optional; the built-in heuristic fallback is used when unavailable.
 pytest
