@@ -5,6 +5,7 @@ ai4bharat/indictrans2-en-indic-dist-200M on Hugging Face and run huggingface_hub
 
   python src/eval_output_direction.py --split val --n 30 --backend indictrans2 --show 1
   python src/eval_output_direction.py --split val --n 30 --backend nllb
+  python src/eval_output_direction.py --debug ben_Beng --placeholders digits   # why a language falls back
 
 Answers are built from REAL scheme records of the chosen split (data/rag_schemes.json + the frozen
 split map): description, an eligibility sentence from the scheme's rule, and the official link,
@@ -97,26 +98,29 @@ def main():
     ap.add_argument("--langs", nargs="*", default=TARGETS)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-round-trip", action="store_true")
+    ap.add_argument("--placeholders", default="alpha", choices=["alpha", "digits"],
+                    help="output-side placeholder style; 'digits' avoids models transliterating ZX..X tokens")
     ap.add_argument("--debug", metavar="LANG", help="e.g. ben_Beng: print the RAW masked source and RAW MT output "
                     "for the first answer (to see WHY a language falls back to English), then exit")
     ap.add_argument("--show", type=int, default=1, help="print this many example answers per language")
     a = ap.parse_args()
 
     gl = Glossary.from_json("data/registry/glossary.json")
-    layer = TranslationLayer(TranslationConfig(backend=a.backend, round_trip=not a.no_round_trip), gl,
+    layer = TranslationLayer(TranslationConfig(backend=a.backend, round_trip=not a.no_round_trip,
+                                                  output_placeholder_style=a.placeholders), gl,
                              langid=LangID(use_indiclid=False))
     answers = load_answers(a.split, a.n, a.seed)
     if a.debug:
         from janora.translation.pipeline import split_sentences, split_chunks
-        masked = layer.masker.mask(answers[0][1])
+        masked = layer.out_masker.mask(answers[0][1])
         print("MASKED SOURCE:\n", masked.text, "\n")
         for name, pieces in (("sentences", split_sentences(masked.text)), ("chunks(12)", split_chunks(masked.text, 12))):
             out = layer.backend.translate(pieces, "eng_Latn", a.debug)
             print(f"RAW MT OUTPUT ({name}):")
             for src, o in zip(pieces, out):
                 print("  src:", src[:150], "\n  out:", o[:200])
-            print("  placeholders found:", dict(layer.masker.placeholders_in(" ".join(out))),
-                  " expected:", sorted(k[2:-1] for k in masked.slots), "\n")
+            print("  placeholders found:", dict(layer.out_masker.placeholders_in(" ".join(out))),
+                  " expected:", sorted(sl.key for sl in masked.slots.values()), "\n")
         return
     print(f"backend={a.backend} split={a.split} answers={len(answers)} "
           f"(e.g. {answers[0][1][:110]!r}...)\n")
