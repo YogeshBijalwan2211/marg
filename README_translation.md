@@ -1,49 +1,56 @@
 # JANORA translation layer
 
-This module converts multilingual user queries to an English pivot for intent,
-slot extraction, and grounded reasoning, then translates answers back into the
-user's language.
+This module translates multilingual user queries into an English pivot for intent,
+slot extraction, and grounded reasoning, then translates answers into the user's
+language.
 
 ## Components
 
-- `janora/translation/`: language identification, transliteration, number
+- `janora/translation/`: language identification, Indic transliteration, number
   normalisation, scheme-name masking, NLLB backend, and the translation pipeline.
 - `data/registry/glossary.json`: canonical scheme names and aliases.
 - `src/eval_translation.py`: offline checks and end-to-end translation evaluation.
-- `tests/test_translation.py`: model-free regression tests.
+- `janora/translation/evaluate.py`: chrF++, number preservation, glossary accuracy,
+  and optional COMET scoring.
+- `tests/test_translation.py`: regression tests that do not download the NLLB model.
 
-## Default model: NLLB-200
+## Default translation model
 
-The default backend is `facebook/nllb-200-distilled-600M`. It is public on
-Hugging Face and does not require IndicTransToolkit or Hugging Face login.
-NLLB uses FLORES-200 language codes (for example, `hin_Deva`, `ben_Beng`,
-`tam_Taml`, and `eng_Latn`). Latin-script Indic text is transliterated to its
-native script before translation when the optional Indic transliteration
-package is available.
+The only supported machine-translation backend in this branch is
+`facebook/nllb-200-distilled-600M`. The model repository is public; inference
+does not require a Hugging Face login. The Hugging Face model page currently
+identifies the checkpoint with the FLORES-200 language set and displays 196
+language tags. It is not a model for every language, and quality varies by
+language pair.
 
-NLLB-200 supports 200 languages, not every language. Support for a language
-does not guarantee equal translation quality. Hinglish is not a separate NLLB
-language; its handling relies on language detection and transliteration, so
-mixed Hindi-English inputs must be evaluated on project examples.
+NLLB uses language tags such as `eng_Latn`, `hin_Deva`, `ben_Beng`,
+`tam_Taml`, and `urd_Arab`. The backend validates codes against the loaded
+tokenizer instead of maintaining a separate hard-coded list.
 
-## Install
+Hinglish is not a separate NLLB language tag. Latin-script Indic input is
+transliterated to native script before translation, and Latin-script Indic
+output is translated into native script and transliterated back. This requires
+the optional IndicXlit package and its model files. Mixed Hindi-English
+sentences should still be tested with actual JANORA queries.
 
-Install a PyTorch wheel suitable for your environment first (CPU or CUDA), then:
+## Installation
+
+Install a PyTorch build suitable for your local/Colab CPU or CUDA runtime, then:
 
 ```bash
 pip install -r requirements-translation.txt
 ```
 
-For Google Colab, select a GPU runtime if available. Check it with:
+For Colab, choose a GPU runtime when available and check it with:
 
 ```python
 import torch
 print(torch.__version__)
-print("CUDA:", torch.cuda.is_available())
+print("CUDA available:", torch.cuda.is_available())
 ```
 
-The model can run on CPU, but inference is slower. The first run downloads the
-model weights (roughly a few GB).
+The model runs on CPU too, but inference is slower. The first run downloads
+the model weights (about 2.5 GB for this checkpoint).
 
 ## Use
 
@@ -57,14 +64,14 @@ query = layer.to_english(
     "meri income 3 lakh hai, kya mujhe pm kisan milega?"
 )
 if query.needs_confirmation or query.ask_language:
-    # Ask the user to confirm critical extracted facts or their language.
+    # Confirm critical facts or ask the user to confirm their language.
     pass
 
-# After generating a grounded English answer:
+# After the grounded English answer has been generated:
 answer = layer.answer_with_disclaimer(english_answer, query.lang.code)
 ```
 
-## Run checks and evaluation
+## Checks and evaluation
 
 Run from the repository root:
 
@@ -75,16 +82,16 @@ python src/eval_translation.py mt --split val --backend nllb --limit 300
 python src/eval_translation.py mt --split val --backend nllb --no-translit --limit 300
 ```
 
-Use the validation split for tuning. Run the test split only once for the final
-project report. Model-based evaluation requires downloading the NLLB model.
+Use the validation split to tune parameters. Run the test split only once for
+the final project report. Model-based evaluation downloads NLLB weights and
+may take longer on CPU.
 
-## Important deployment notes
+## Deployment and safety notes
 
-- NLLB-200's model card specifies a CC-BY-NC 4.0 licence. Review this before
-  any commercial deployment.
-- Critical fields such as age, income, and state should be confirmed with the
-  user; translation must not be the sole source of eligibility decisions.
-- The Hindi safety/disclaimer templates are human-authored. Other-language
-  safety templates should be reviewed by fluent speakers before deployment.
-- Glossary aliases are currently data-dependent. Add native aliases for each
-  language as the scheme registry grows.
+- The model card lists the checkpoint licence as CC-BY-NC 4.0. Review its
+  non-commercial restriction before any commercial deployment.
+- Translation must not be the sole basis for eligibility decisions. Confirm
+  critical values such as age, income, and state with the user.
+- The Hindi safety/disclaimer templates are human-authored. Have fluent
+  speakers review them and prepare reviewed templates for other target languages.
+- Add native scheme aliases to the glossary as the multilingual registry grows.
