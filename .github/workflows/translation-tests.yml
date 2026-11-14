@@ -1,0 +1,31 @@
+name: Translation tests
+
+on:
+  push:
+    branches:
+      - main
+      - translation/nllb-migration
+  pull_request:
+    paths:
+      - "janora/translation/**"
+      - "tests/test_translation.py"
+      - "requirements-translation.txt"
+      - ".github/workflows/translation-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pytest sacrebleu
+      - name: Run translation regression tests
+        run: python -m pytest tests/test_translation.py -q
