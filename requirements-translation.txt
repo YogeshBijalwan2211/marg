@@ -1,11 +1,11 @@
 # JANORA translation dependencies (NLLB-200 default)
-# Install a PyTorch build appropriate for your Colab/local CUDA runtime first.
+# Install a PyTorch wheel suitable for your CPU/CUDA runtime if needed.
 torch
 transformers>=4.40,<5
 sentencepiece
 sacrebleu
 sacremoses
-# Romanised Indian-language transliteration (optional but recommended for Hinglish)
+# Roman/native-script conversion for Indic languages (recommended for Hinglish).
 ai4bharat-transliteration
-# IndicLID is optional; the built-in heuristic fallback is used when unavailable.
+# IndicLID is optional; langid.py falls back to a built-in heuristic.
 pytest
