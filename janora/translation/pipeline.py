@@ -20,6 +20,7 @@ PLACEHOLDER_MISMATCH = "placeholder_mismatch"
 NUMBER_CHANGED = "number_changed"
 LOW_ROUND_TRIP = "low_round_trip_similarity"
 TEMPLATE_FALLBACK = "template_missing_for_language"
+XLIT_UNAVAILABLE = "roman_transliteration_unavailable"
 
 _SENT = re.compile(r"(?<=[.!?।])\s+")
 
@@ -80,7 +81,7 @@ class TranslationLayer:
 
     @property
     def backend(self) -> MTBackend:
-        """Lazily load the model only when a translation is requested."""
+        """Lazily load the NLLB model only when translation is requested."""
         if self._backend is None:
             self._backend = make_backend(self.cfg)
         return self._backend
@@ -110,7 +111,7 @@ class TranslationLayer:
 
     @staticmethod
     def _model_language(language: str) -> str:
-        """Map roman-script Indic target languages to their native NLLB script."""
+        """Map roman-script Indic tags to their NLLB native-script language tags."""
         if language.endswith("_Latn") and not language.startswith("eng"):
             return native_code(language)
         return language
@@ -144,10 +145,13 @@ class TranslationLayer:
             if self.cfg.transliterate_roman:
                 try:
                     source_text = self.translit.transliterate(source_text, lang.code)
-                except (ImportError, ModuleNotFoundError):
-                    # Don't crash the entire assistant if optional Xlit model files
-                    # are unavailable; the caller's confirmation/quality gates remain.
-                    issues.append("roman_transliteration_unavailable")
+                except Exception:
+                    # Do not pass Latin characters to NLLB while falsely labelling
+                    # them as a native Indic script. Ask the caller to confirm/retry.
+                    issues.append(XLIT_UNAVAILABLE)
+                    return InputResult(
+                        text, lang, normalised, normalised, issues, True, ask_language
+                    )
 
         translated, mt_issues = self._mt(
             masked, source_text, model_source, ENGLISH
@@ -155,7 +159,7 @@ class TranslationLayer:
         issues.extend(mt_issues)
         english = self.masker.unmask(translated, masked)
         needs_confirmation = bool(
-            set(issues) & {PLACEHOLDER_MISMATCH, NUMBER_CHANGED, "roman_transliteration_unavailable"}
+            set(issues) & {PLACEHOLDER_MISMATCH, NUMBER_CHANGED, XLIT_UNAVAILABLE}
         )
         return InputResult(
             text, lang, normalised, english, issues, needs_confirmation, ask_language
@@ -163,15 +167,18 @@ class TranslationLayer:
 
     def confirm_slot(self, slot: str, value: str, lang: str) -> str:
         model_lang = self._model_language(lang)
-        text, _ = render(
+        text, fallback = render(
             "confirm_slot", model_lang,
             slot=slot_label(slot, model_lang), value=value,
         )
         if model_lang != lang:
             try:
                 return self.translit.transliterate_to_roman(text, lang)
-            except (ImportError, ModuleNotFoundError):
-                pass
+            except Exception:
+                text, _ = render(
+                    "confirm_slot", ENGLISH,
+                    slot=slot, value=value,
+                )
         return text
 
     def template(self, key: str, lang: str, **variables) -> str:
@@ -180,8 +187,8 @@ class TranslationLayer:
         if model_lang != lang:
             try:
                 return self.translit.transliterate_to_roman(text, lang)
-            except (ImportError, ModuleNotFoundError):
-                pass
+            except Exception:
+                text, _ = render(key, ENGLISH, **variables)
         return text
 
     def from_english(self, answer_en: str, target_lang: str) -> OutputResult:
@@ -219,9 +226,12 @@ class TranslationLayer:
                 translated = self.translit.transliterate_to_roman(
                     translated, target_lang
                 )
-            except (ImportError, ModuleNotFoundError):
-                issues.append("roman_transliteration_unavailable")
-                show_english = True
+            except Exception:
+                issues.append(XLIT_UNAVAILABLE)
+                return OutputResult(
+                    answer_en, answer_en, target_lang, issues,
+                    show_english_alongside=True, fell_back_to_english=True,
+                )
 
         final_text = self.masker.unmask(
             translated, masked, scheme_lang=target_lang,
@@ -241,7 +251,8 @@ class TranslationLayer:
                 disclaimer = self.translit.transliterate_to_roman(
                     disclaimer, target_lang
                 )
-            except (ImportError, ModuleNotFoundError):
+            except Exception:
+                disclaimer, _ = render("verify_disclaimer", ENGLISH)
                 fallback = True
         result.text = f"{result.text}\n\n{disclaimer}"
         if fallback:
@@ -251,7 +262,8 @@ class TranslationLayer:
             if model_lang != target_lang:
                 try:
                     note = self.translit.transliterate_to_roman(note, target_lang)
-                except (ImportError, ModuleNotFoundError):
+                except Exception:
+                    note, _ = render("translation_uncertain", ENGLISH)
                     note_fallback = True
             result.text += f"\n\n{note}\n{result.english}"
             if note_fallback:
