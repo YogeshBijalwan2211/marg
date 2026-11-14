@@ -1,0 +1,13 @@
+# core
+transformers>=4.40
+torch
+sacrebleu
+sentencepiece
+# IndicTrans2 pre/post-processing
+IndicTransToolkit            # pip install git+https://github.com/VarunGumma/IndicTransToolkit if PyPI is stale
+# transliteration (Hinglish -> Devanagari)
+ai4bharat-transliteration
+# language ID: install IndicLID from https://github.com/AI4Bharat/IndicLID (optional; heuristic fallback exists)
+# optional metrics
+# unbabel-comet
+pytest
