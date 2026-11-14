@@ -96,6 +96,7 @@ def test_langid():
 
 def test_nllb_backend_validates_codes_using_tokenizer_mapping():
     backend = object.__new__(NLLBBackend)
+    backend.cfg = TranslationConfig()
     backend.tok = FakeTokenizer()
     assert backend._language_id("hin_Deva") == 17
     assert backend._language_id("eng_Latn") == 9
