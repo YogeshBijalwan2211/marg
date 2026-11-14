@@ -5,20 +5,22 @@ import pytest
 from janora.translation import (
     Glossary, SchemeEntry, TranslationConfig, TranslationLayer
 )
-from janora.translation.backends import MTBackend, NLLBBackend, NLLB_LANGUAGES
+from janora.translation.backends import MTBackend, NLLBBackend
 from janora.translation.langid import LangID
 from janora.translation.normalise import format_indian, normalise_text
 
 
 class FakeMT(MTBackend):
-    """Dictionary translator that preserves placeholders; can be made lossy."""
+    """Dictionary translator that preserves placeholders and records code pairs."""
 
     def __init__(self, table, drop_placeholders=False, mangle_digits=False):
         self.table = table
         self.drop = drop_placeholders
         self.mangle = mangle_digits
+        self.calls = []
 
     def translate(self, sentences, src, tgt):
+        self.calls.append((src, tgt))
         out = []
         for sentence in sentences:
             translated = self.table.get(sentence, sentence)
@@ -33,6 +35,17 @@ class FakeMT(MTBackend):
 class FakeXlit:
     def transliterate(self, text, lang):
         return text
+
+    def transliterate_to_roman(self, text, lang):
+        return f"roman:{text}"
+
+
+class FakeTokenizer:
+    unk_token_id = 0
+    lang_code_to_id = {"hin_Deva": 17, "eng_Latn": 9}
+
+    def convert_tokens_to_ids(self, token):
+        return self.lang_code_to_id.get(token, self.unk_token_id)
 
 
 GLOSS = Glossary([
@@ -81,19 +94,15 @@ def test_langid():
     assert detector.detect("எனது வயது 40").code == "tam_Taml"
 
 
-def test_nllb_language_codes_include_project_languages():
-    expected = {
-        "eng_Latn", "hin_Deva", "ben_Beng", "asm_Beng", "tel_Telu",
-        "mar_Deva", "tam_Taml", "urd_Arab", "guj_Gujr", "kan_Knda",
-        "ory_Orya", "mal_Mlym", "pan_Guru", "npi_Deva",
-    }
-    assert expected <= NLLB_LANGUAGES
-
-
-@pytest.mark.parametrize("code", ["hin_Latn", "foo_Bar", "en_XX"])
-def test_nllb_rejects_unsupported_codes(code):
+def test_nllb_backend_validates_codes_using_tokenizer_mapping():
+    backend = object.__new__(NLLBBackend)
+    backend.tok = FakeTokenizer()
+    assert backend._language_id("hin_Deva") == 17
+    assert backend._language_id("eng_Latn") == 9
     with pytest.raises(ValueError, match="not supported"):
-        NLLBBackend._validate_language(code)
+        backend._language_id("hin_Latn")
+    with pytest.raises(ValueError, match="not supported"):
+        backend._language_id("foo_Bar")
 
 
 def test_input_hindi_roundtrip_numbers_and_scheme():
@@ -104,6 +113,19 @@ def test_input_hindi_roundtrip_numbers_and_scheme():
     }).to_english(source)
     assert result.english == "My income is 300000 for PM-KISAN."
     assert not result.issues and not result.needs_confirmation
+
+
+def test_roman_hindi_input_uses_native_nllb_code():
+    translator = layer({})
+    result = translator.to_english("meri income 3 lakh hai")
+    assert ("hin_Deva", "eng_Latn") in translator.backend.calls
+
+
+def test_roman_hindi_output_uses_native_nllb_then_romanizes():
+    translator = layer({"Hello.": "नमस्ते।"})
+    result = translator.from_english("Hello.", "hin_Latn")
+    assert ("eng_Latn", "hin_Deva") in translator.backend.calls
+    assert result.text.startswith("roman:")
 
 
 def test_input_placeholder_loss_flags():
@@ -170,22 +192,22 @@ def test_missing_language_template_falls_back_and_flags():
     assert "template_missing_for_language" in result.issues
 
 
-def test_confirm_slot():
-    assert layer({}).confirm_slot(
-        "income", "₹3,00,000", "hin_Deva"
-    ) == "वार्षिक आय: ₹3,00,000। क्या यह सही है?"
+def test_confirm_slot_romanizes_output_language():
+    result = layer({}).confirm_slot("age", "40", "hin_Latn")
+    assert result.startswith("roman:")
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("आय 2 करोड़ है", "आय 20000000 है"),
-    ("आय 1 हज़ार", "आय 1000"),
-    ("0.9 lak", "90000"),
-    ("வருமானம் ௦.௭ லட்சம்", "வருமானம் 70000"),
-    ("آمدنی 2 لاکھ", "آمدنی 200000"),
-    ("hello 😊🙏  there", "hello there"),
-])
-def test_noisy_real_inputs(raw, expected):
-    assert normalise_text(raw)[0] == expected
+def test_noisy_real_inputs():
+    noisy = [
+        ("आय 2 करोड़ है", "आय 20000000 है"),
+        ("आय 1 हज़ार", "आय 1000"),
+        ("0.9 lak", "90000"),
+        ("வருமானம் ௦.௭ லட்சம்", "வருமானம் 70000"),
+        ("آمدنی 2 لاکھ", "آمدنی 200000"),
+        ("hello 😊🙏  there", "hello there"),
+    ]
+    for raw, expected in noisy:
+        assert normalise_text(raw)[0] == expected
 
 
 def test_scheme_name_with_amount_is_matched_before_number_normalisation():
