@@ -1,10 +1,11 @@
 """Translation evaluation: chrF++, number/entity preservation, glossary accuracy,
-language-ID accuracy, and an IndicTrans2-vs-NLLB comparison CLI.
+and language identification.
 
-Test TSV columns: id <TAB> source <TAB> reference_en <TAB> src_lang [<TAB> glossary_terms ('|' separated)]
-Usage: python -m janora.translation.evaluate test.tsv --glossary glossary.json --backends indictrans2 nllb
+Test TSV columns: id<TAB>source<TAB>reference_en<TAB>src_lang[<TAB>glossary_terms]
+Usage: python -m janora.translation.evaluate test.tsv --glossary glossary.json
 """
 from __future__ import annotations
+
 import argparse
 import csv
 import json
@@ -18,35 +19,41 @@ def _nums(text: str) -> Counter:
     return Counter(re.findall(r"\d+(?:\.\d+)?", normalise_text(text)[0]))
 
 
-def number_preservation(hyps: list[str], refs: list[str]) -> float:
+def number_preservation(hypotheses: list[str], references: list[str]) -> float:
     """Share of reference numbers that appear in the hypothesis (multiset recall)."""
-    hit = tot = 0
-    for h, r in zip(hyps, refs):
-        rn = _nums(r)
-        tot += sum(rn.values())
-        hit += sum((rn & _nums(h)).values())
-    return hit / tot if tot else 1.0
+    hits = total = 0
+    for hypothesis, reference in zip(hypotheses, references):
+        reference_numbers = _nums(reference)
+        total += sum(reference_numbers.values())
+        hits += sum((reference_numbers & _nums(hypothesis)).values())
+    return hits / total if total else 1.0
 
 
-def glossary_accuracy(hyps: list[str], terms: list[list[str]]) -> float:
-    hit = tot = 0
-    for h, ts in zip(hyps, terms):
-        for t in ts:
-            tot += 1
-            hit += t.lower() in h.lower()
-    return hit / tot if tot else 1.0
+def glossary_accuracy(hypotheses: list[str], terms: list[list[str]]) -> float:
+    hits = total = 0
+    for hypothesis, row_terms in zip(hypotheses, terms):
+        for term in row_terms:
+            total += 1
+            hits += term.lower() in hypothesis.lower()
+    return hits / total if total else 1.0
 
 
-def chrfpp(hyps: list[str], refs: list[str]) -> float:
+def chrfpp(hypotheses: list[str], references: list[str]) -> float:
     from sacrebleu.metrics import CHRF
-    return CHRF(word_order=2).corpus_score(hyps, [refs]).score
+    return CHRF(word_order=2).corpus_score(hypotheses, [references]).score
 
 
-def comet(srcs: list[str], hyps: list[str], refs: list[str], model: str = "Unbabel/wmt22-comet-da") -> float:
-    from comet import download_model, load_from_checkpoint  # pip install unbabel-comet
-    m = load_from_checkpoint(download_model(model))
-    data = [{"src": s, "mt": h, "ref": r} for s, h, r in zip(srcs, hyps, refs)]
-    return float(m.predict(data, batch_size=16, gpus=0).system_score)
+def comet(
+    sources: list[str], hypotheses: list[str], references: list[str],
+    model: str = "Unbabel/wmt22-comet-da",
+) -> float:
+    from comet import download_model, load_from_checkpoint
+    metric = load_from_checkpoint(download_model(model))
+    data = [
+        {"src": source, "mt": hypothesis, "ref": reference}
+        for source, hypothesis, reference in zip(sources, hypotheses, references)
+    ]
+    return float(metric.predict(data, batch_size=16, gpus=0).system_score)
 
 
 def langid_accuracy(predicted: list[str], gold: list[str]) -> float:
@@ -54,38 +61,49 @@ def langid_accuracy(predicted: list[str], gold: list[str]) -> float:
 
 
 def _load(path: str):
-    with open(path, encoding="utf-8") as f:
-        return [r for r in csv.reader(f, delimiter="\t") if r and not r[0].startswith("#")]
+    with open(path, encoding="utf-8") as file:
+        return [
+            row for row in csv.reader(file, delimiter="\t")
+            if row and not row[0].startswith("#")
+        ]
 
 
 def main() -> None:
     from .config import TranslationConfig
     from .glossary import Glossary
     from .pipeline import TranslationLayer
-    ap = argparse.ArgumentParser()
-    ap.add_argument("tsv")
-    ap.add_argument("--glossary")
-    ap.add_argument("--backends", nargs="+", default=["indictrans2", "nllb"])
-    ap.add_argument("--no-translit", action="store_true", help="ablation: skip Hinglish transliteration")
-    ap.add_argument("--comet", action="store_true")
-    a = ap.parse_args()
-    rows = _load(a.tsv)
-    srcs, refs, langs = [r[1] for r in rows], [r[2] for r in rows], [r[3] for r in rows]
-    terms = [(r[4].split("|") if len(r) > 4 and r[4] else []) for r in rows]
-    gl = Glossary.from_json(a.glossary) if a.glossary else Glossary()
-    report = {}
-    for b in a.backends:
-        cfg = TranslationConfig(backend=b, transliterate_roman=not a.no_translit)
-        layer = TranslationLayer(cfg, gl)
-        res = [layer.to_english(s, forced_lang=l) for s, l in zip(srcs, langs)]
-        hyps = [r.english for r in res]
-        report[b] = {
-            "chrF++": chrfpp(hyps, refs),
-            "number_preservation": number_preservation(hyps, refs),
-            "glossary_accuracy": glossary_accuracy(hyps, terms),
-            "gate_failure_rate": sum(bool(r.issues) for r in res) / len(res),
-            **({"COMET": comet(srcs, hyps, refs)} if a.comet else {}),
-        }
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("tsv")
+    parser.add_argument("--glossary")
+    parser.add_argument("--no-translit", action="store_true")
+    parser.add_argument("--comet", action="store_true")
+    args = parser.parse_args()
+
+    rows = _load(args.tsv)
+    sources = [row[1] for row in rows]
+    references = [row[2] for row in rows]
+    languages = [row[3] for row in rows]
+    terms = [
+        row[4].split("|") if len(row) > 4 and row[4] else []
+        for row in rows
+    ]
+    glossary = Glossary.from_json(args.glossary) if args.glossary else Glossary()
+    config = TranslationConfig(transliterate_roman=not args.no_translit)
+    layer = TranslationLayer(config, glossary)
+
+    results = [layer.to_english(source, forced_lang=lang)
+               for source, lang in zip(sources, languages)]
+    hypotheses = [result.english for result in results]
+    report = {
+        "backend": config.backend,
+        "chrF++": chrfpp(hypotheses, references),
+        "number_preservation": number_preservation(hypotheses, references),
+        "glossary_accuracy": glossary_accuracy(hypotheses, terms),
+        "gate_failure_rate": sum(bool(result.issues) for result in results) / max(len(results), 1),
+    }
+    if args.comet:
+        report["COMET"] = comet(sources, hypotheses, references)
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 
