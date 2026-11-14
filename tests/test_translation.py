@@ -25,7 +25,7 @@ class FakeMT(MTBackend):
         for sentence in sentences:
             translated = self.table.get(sentence, sentence)
             if self.drop:
-                translated = re.sub(r"ZX[A-Z]\\d+X", "", translated)
+                translated = re.sub(r"ZX[A-Z]\d+X", "", translated)
             if self.mangle:
                 translated += " 7"
             out.append(translated)
