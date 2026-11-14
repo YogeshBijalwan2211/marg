@@ -1,53 +1,9 @@
-"""Machine-translation backends for JANORA.
-
-NLLB-200 is the default backend. IndicTrans2 is retained only as an optional
-legacy/comparison backend; it is not imported or installed for NLLB usage.
-"""
+"""NLLB-200 machine-translation backend used by JANORA."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
 from .config import TranslationConfig
-
-# FLORES-200 language codes supported by the NLLB-200 model used here.
-# Keep this explicit: accepting arbitrary codes can silently produce invalid
-# target token IDs or confusing generation errors.
-NLLB_LANGUAGES = frozenset({
-    "ace_Arab", "ace_Latn", "acm_Arab", "acq_Arab", "aeb_Arab", "af_Latn",
-    "ajp_Arab", "aka_Latn", "amh_Ethi", "apc_Arab", "arb_Arab", "ars_Arab",
-    "ary_Arab", "arz_Arab", "asm_Beng", "ast_Latn", "awa_Deva", "ayr_Latn",
-    "azb_Arab", "azj_Latn", "bak_Cyrl", "bam_Latn", "ban_Latn", "bel_Cyrl",
-    "bem_Latn", "ben_Beng", "bho_Deva", "bjn_Arab", "bjn_Latn", "bod_Tibt",
-    "bos_Latn", "bug_Latn", "bul_Cyrl", "cat_Latn", "ceb_Latn", "ces_Latn",
-    "cjk_Latn", "ckb_Arab", "crh_Latn", "cym_Latn", "dan_Latn", "deu_Latn",
-    "dik_Latn", "dyu_Latn", "dzo_Tibt", "ell_Grek", "eng_Latn", "epo_Latn",
-    "est_Latn", "eus_Latn", "ewe_Latn", "fao_Latn", "fij_Latn", "fin_Latn",
-    "fon_Latn", "fra_Latn", "fur_Latn", "fuv_Latn", "gaz_Latn", "gla_Latn",
-    "gle_Latn", "glg_Latn", "grn_Latn", "guj_Gujr", "hat_Latn", "hau_Latn",
-    "heb_Hebr", "hin_Deva", "hne_Deva", "hrv_Latn", "hun_Latn", "hye_Armn",
-    "ibo_Latn", "ilo_Latn", "ind_Latn", "isl_Latn", "ita_Latn", "jav_Latn",
-    "jpn_Jpan", "kab_Latn", "kac_Latn", "kam_Latn", "kan_Knda", "kas_Arab",
-    "kas_Deva", "kat_Geor", "kaz_Cyrl", "kbp_Latn", "kea_Latn", "khk_Cyrl",
-    "khm_Khmr", "kik_Latn", "kin_Latn", "kir_Cyrl", "kmb_Latn", "kmr_Latn",
-    "knc_Arab", "knc_Latn", "kon_Latn", "kor_Hang", "lao_Laoo", "lij_Latn",
-    "lim_Latn", "lin_Latn", "lit_Latn", "lmo_Latn", "ltg_Latn", "ltz_Latn",
-    "lua_Latn", "lug_Latn", "luo_Latn", "lus_Latn", "lvs_Latn", "mag_Deva",
-    "mai_Deva", "mal_Mlym", "mar_Deva", "min_Latn", "mkd_Cyrl", "plt_Latn",
-    "mlt_Latn", "mni_Beng", "mos_Latn", "mri_Latn", "mya_Mymr", "nld_Latn",
-    "nno_Latn", "nob_Latn", "npi_Deva", "nso_Latn", "nus_Latn", "nya_Latn",
-    "oci_Latn", "ory_Orya", "pag_Latn", "pan_Guru", "pap_Latn", "pbt_Arab",
-    "pes_Arab", "pol_Latn", "por_Latn", "prs_Arab", "quy_Latn", "ron_Latn",
-    "run_Latn", "rus_Cyrl", "sag_Latn", "san_Deva", "sat_Beng", "scn_Latn",
-    "shn_Mymr", "sin_Sinh", "slk_Latn", "slv_Latn", "smo_Latn", "sna_Latn",
-    "snd_Arab", "som_Latn", "sot_Latn", "spa_Latn", "als_Latn", "srd_Latn",
-    "srp_Cyrl", "ssw_Latn", "sun_Latn", "swe_Latn", "swh_Latn", "szl_Latn",
-    "tam_Taml", "taq_Latn", "taq_Tfng", "tat_Cyrl", "tel_Telu", "tgk_Cyrl",
-    "tgl_Latn", "tha_Thai", "tir_Ethi", "tpi_Latn", "tsn_Latn", "tso_Latn",
-    "tuk_Latn", "tum_Latn", "tur_Latn", "twi_Latn", "tzm_Tfng", "uig_Arab",
-    "ukr_Cyrl", "umb_Latn", "urd_Arab", "uzn_Latn", "vec_Latn", "vie_Latn",
-    "war_Latn", "wol_Latn", "xho_Latn", "ydd_Hebr", "yor_Latn", "yue_Hant",
-    "zho_Hans", "zho_Hant", "zsm_Latn", "zul_Latn",
-})
 
 
 class MTBackend(ABC):
@@ -55,7 +11,7 @@ class MTBackend(ABC):
 
     @abstractmethod
     def translate(self, sentences: list[str], src: str, tgt: str) -> list[str]:
-        """Translate sentences using FLORES codes (e.g. hin_Deva -> eng_Latn)."""
+        """Translate sentences using NLLB/FLORES codes (e.g. hin_Deva -> eng_Latn)."""
 
 
 def _device(cfg: TranslationConfig) -> str:
@@ -66,7 +22,7 @@ def _device(cfg: TranslationConfig) -> str:
 
 
 class NLLBBackend(MTBackend):
-    """NLLB-200 sequence-to-sequence backend with explicit language control."""
+    """NLLB-200 sequence-to-sequence backend with tokenizer-driven code validation."""
 
     name = "nllb"
 
@@ -80,30 +36,36 @@ class NLLBBackend(MTBackend):
         self.model.to(self.device)
         self.model.eval()
 
-    @staticmethod
-    def _validate_language(code: str) -> None:
-        if code not in NLLB_LANGUAGES:
+    def _language_id(self, code: str) -> int:
+        """Resolve a language tag using the loaded tokenizer, not a hand-maintained list."""
+        language_ids = getattr(self.tok, "lang_code_to_id", None)
+        if language_ids is not None:
+            token_id = language_ids.get(code)
+            if token_id is None:
+                raise ValueError(
+                    f"Language code {code!r} is not supported by {self.cfg.nllb_model}. "
+                    "Use an NLLB/FLORES language tag (for example hin_Deva or eng_Latn)."
+                )
+            return token_id
+
+        token_id = self.tok.convert_tokens_to_ids(code)
+        if token_id is None or token_id == self.tok.unk_token_id:
             raise ValueError(
-                f"Language code {code!r} is not supported by the configured "
-                "NLLB-200 backend. Use a FLORES-200 code such as hin_Deva "
-                "or eng_Latn. Romanised Indic input must be transliterated "
-                "to its native script before NLLB translation."
+                f"Language code {code!r} is not recognised by the NLLB tokenizer. "
+                "Use an NLLB/FLORES language tag (for example hin_Deva or eng_Latn)."
             )
+        return token_id
 
     def translate(self, sentences: list[str], src: str, tgt: str) -> list[str]:
         import torch
 
         if not sentences:
             return []
-        self._validate_language(src)
-        self._validate_language(tgt)
 
-        # NLLB's tokenizer uses the source language token at the start and
-        # forced_bos_token_id to select the target language.
+        # Validate both sides before setting src_lang or starting generation.
+        self._language_id(src)
+        target_id = self._language_id(tgt)
         self.tok.src_lang = src
-        target_id = self.tok.convert_tokens_to_ids(tgt)
-        if target_id is None or target_id == self.tok.unk_token_id:
-            raise ValueError(f"Tokenizer does not recognise NLLB target code {tgt!r}")
 
         translated: list[str] = []
         for start in range(0, len(sentences), self.cfg.batch_size):
@@ -132,61 +94,10 @@ class NLLBBackend(MTBackend):
         return translated
 
 
-class IndicTrans2Backend(MTBackend):
-    """Optional legacy IndicTrans2 backend; does not load unless explicitly selected."""
-
-    name = "indictrans2"
-
-    def __init__(self, cfg: TranslationConfig):
-        import torch  # noqa: F401
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        try:
-            from IndicTransToolkit.processor import IndicProcessor
-        except ImportError:
-            from IndicTransToolkit import IndicProcessor  # type: ignore
-
-        self.cfg, self.device = cfg, _device(cfg)
-        self.ip = IndicProcessor(inference=True)
-        self._models: dict[str, tuple] = {}
-        self._AutoTok, self._AutoModel = AutoTokenizer, AutoModelForSeq2SeqLM
-
-    def _load(self, name: str):
-        if name not in self._models:
-            tok = self._AutoTok.from_pretrained(name, trust_remote_code=True)
-            model = self._AutoModel.from_pretrained(name, trust_remote_code=True)
-            self._models[name] = (tok, model.to(self.device).eval())
-        return self._models[name]
-
-    def translate(self, sentences: list[str], src: str, tgt: str) -> list[str]:
-        import torch
-        name = self.cfg.indictrans2_indic_en if tgt == "eng_Latn" else self.cfg.indictrans2_en_indic
-        tok, model = self._load(name)
-        out: list[str] = []
-        for i in range(0, len(sentences), self.cfg.batch_size):
-            batch = self.ip.preprocess_batch(
-                sentences[i:i + self.cfg.batch_size], src_lang=src, tgt_lang=tgt
-            )
-            enc = tok(
-                batch, truncation=True, padding="longest", return_tensors="pt",
-                return_attention_mask=True,
-            ).to(self.device)
-            with torch.inference_mode():
-                gen = model.generate(
-                    **enc, use_cache=False, min_length=0, num_beams=self.cfg.num_beams,
-                    max_length=self.cfg.max_length, num_return_sequences=1,
-                )
-            dec = tok.batch_decode(gen, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            out.extend(self.ip.postprocess_batch(dec, lang=tgt))
-        return out
-
-
 def make_backend(cfg: TranslationConfig) -> MTBackend:
-    backends = {"nllb": NLLBBackend, "indictrans2": IndicTrans2Backend}
-    try:
-        backend_cls = backends[cfg.backend]
-    except KeyError as exc:
+    if cfg.backend != "nllb":
         raise ValueError(
-            f"Unknown translation backend {cfg.backend!r}. "
-            f"Choose one of: {', '.join(sorted(backends))}."
-        ) from exc
-    return backend_cls(cfg)
+            f"Unsupported translation backend {cfg.backend!r}; JANORA is configured "
+            "to use NLLB-200 ('nllb')."
+        )
+    return NLLBBackend(cfg)
