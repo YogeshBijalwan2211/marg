@@ -225,3 +225,44 @@ def test_persistent_repetition_falls_back_to_english():
     l = TranslationLayer(TranslationConfig(round_trip=False), GLOSS, AlwaysLoops(), LangID(use_indiclid=False), FakeXlit())
     r = l.from_english("Pension is paid.", "hin_Deva")
     assert r.fell_back_to_english and "repetition_loop" in r.issues and r.text == "Pension is paid."
+
+
+# ---- placeholders transliterated by En->Indic models (seen: Bengali ZXN3X -> জেডএক্সএন3এক্স) -----
+class TransliteratesAlpha(MTBackend):
+    """Mimics the observed failure: Latin ZX..X tokens get rewritten in Bengali letters.
+    Numeric tokens are copied (optionally as native digits)."""
+    def __init__(self, native_digits=False): self.native = native_digits
+    def translate(self, sents, src, tgt):
+        out = []
+        for s in sents:
+            s = re.sub(r"ZX([SMNU])(\d+)X", lambda m: "জেডএক্স" + m.group(1) + m.group(2) + "এক্স", s)
+            if self.native:
+                s = s.translate(str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯"))
+            out.append(s)
+        return out
+
+
+ANSWER = "Pension of ₹250000 is paid to PM-KISAN workers aged 55 years. Official link: https://www.myscheme.gov.in/schemes/x"
+
+
+def test_alpha_placeholders_lost_when_model_transliterates():
+    cfg = TranslationConfig(round_trip=False, output_placeholder_style="alpha")
+    r = TranslationLayer(cfg, GLOSS, TransliteratesAlpha(), LangID(use_indiclid=False), FakeXlit()).from_english(ANSWER, "ben_Beng")
+    assert r.fell_back_to_english                      # the failure seen on Bengali/Gujarati/Kannada/Odia/Urdu
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_digit_placeholders_survive_and_restore(native):
+    cfg = TranslationConfig(round_trip=False, output_placeholder_style="digits")
+    r = TranslationLayer(cfg, GLOSS, TransliteratesAlpha(native), LangID(use_indiclid=False), FakeXlit()).from_english(ANSWER, "ben_Beng")
+    assert not r.fell_back_to_english and not r.issues
+    assert "₹2,50,000" in r.text and "55" in r.text
+    assert "https://www.myscheme.gov.in/schemes/x" in r.text and "PM-KISAN" in r.text
+
+
+def test_digit_style_flags_lost_token():
+    class DropsDigits(MTBackend):
+        def translate(self, sents, src, tgt): return [re.sub(r"9[1-4]\d{3}", "", s) for s in sents]
+    cfg = TranslationConfig(round_trip=False, output_placeholder_style="digits")
+    r = TranslationLayer(cfg, GLOSS, DropsDigits(), LangID(use_indiclid=False), FakeXlit()).from_english(ANSWER, "ben_Beng")
+    assert r.fell_back_to_english and "placeholder_mismatch" in r.issues

@@ -12,6 +12,7 @@ class Transliterator:
     def __init__(self):
         self._engines: dict[str, object] = {}
         self.available = True      # becomes False if IndicXlit is not installed
+        self.protect = _PH         # pattern that isolates placeholders; the pipeline sets the masker's own
 
     def _engine(self, code: str):
         if code not in self._engines:
@@ -36,5 +37,5 @@ class Transliterator:
             warnings.warn("IndicXlit not installed: romanised input is sent to MT untransliterated. "
                           "Install ai4bharat-transliteration (Python <=3.10 / Colab) or use --no-translit.")
             return text
-        parts = _PH.split(text)
-        return "".join(p if _PH.fullmatch(p or "") else self._one(p, code) for p in parts)
+        parts = self.protect.split(text)
+        return "".join(p if self.protect.fullmatch(p or "") else self._one(p, code) for p in parts)

@@ -8,7 +8,7 @@ from .config import TranslationConfig
 from .glossary import Glossary
 from .langid import LangID, LangResult, native_code
 from .masking import Masked, Masker
-from .normalise import clean_text, normalise_numbers, normalise_text
+from .normalise import clean_text, normalise_numbers, normalise_text, to_ascii_digits
 from .templates import render, slot_label
 from .translit import Transliterator
 
@@ -97,10 +97,14 @@ class TranslationLayer:
                  transliterator: Transliterator | None = None):
         self.cfg = cfg or TranslationConfig()
         self.glossary = glossary or Glossary()
-        self.masker = Masker(self.glossary, self.cfg.placeholder_fmt, self.cfg.indian_grouping)
+        self.masker = Masker(self.glossary, self.cfg.placeholder_fmt, self.cfg.indian_grouping,
+                             self.cfg.placeholder_style)            # input direction
+        self.out_masker = Masker(self.glossary, self.cfg.placeholder_fmt, self.cfg.indian_grouping,
+                                 self.cfg.output_placeholder_style)  # output direction
         self._backend = backend
         self.langid = langid or LangID()
         self.translit = transliterator or Transliterator()
+        self.translit.protect = self.masker.split_pattern
 
     @property
     def backend(self) -> MTBackend:           # lazy: models load on first use
@@ -109,7 +113,7 @@ class TranslationLayer:
         return self._backend
 
     # ------------------------------------------------------------------ core
-    def _mt(self, masked: Masked, text: str, src: str, tgt: str) -> tuple[str, list[str]]:
+    def _mt(self, masker: Masker, masked: Masked, text: str, src: str, tgt: str) -> tuple[str, list[str]]:
         """Translate masked text and verify every placeholder survived. Tiers: sentences, then
         clause chunks, then small chunks. Content drops are the real failure mode (see README)."""
         issues: list[str] = []
@@ -120,12 +124,12 @@ class TranslationLayer:
         out, ok = "", False
         for attempt in attempts:
             out = attempt()
-            ok, _, _ = self.masker.verify(masked, out)
+            ok, _, _ = masker.verify(masked, out)
             if ok and not has_repetition(out):
                 break
         else:
             issues.append(PLACEHOLDER_MISMATCH if not ok else REPETITION)
-        if self.masker.stray_digits(masked, out):
+        if masker.stray_digits(masked, out):
             issues.append(NUMBER_CHANGED)
         return out, issues
 
@@ -149,7 +153,7 @@ class TranslationLayer:
             if self.cfg.transliterate_roman:
                 src_text = self.translit.transliterate(src_text, lang.code)
 
-        translated, mt_issues = self._mt(masked, src_text, mt_src, ENGLISH)
+        translated, mt_issues = self._mt(self.masker, masked, src_text, mt_src, ENGLISH)
         issues += mt_issues
         english = self.masker.unmask(translated, masked)
         needs_conf = bool(set(issues) & {PLACEHOLDER_MISMATCH, NUMBER_CHANGED, REPETITION})
@@ -167,14 +171,16 @@ class TranslationLayer:
     def from_english(self, answer_en: str, target_lang: str) -> OutputResult:
         if target_lang == ENGLISH:
             return OutputResult(answer_en, answer_en, target_lang)
-        masked = self.masker.mask(answer_en)
-        translated, issues = self._mt(masked, masked.text, ENGLISH, target_lang)
+        m = self.out_masker
+        masked = m.mask(answer_en)
+        translated, issues = self._mt(m, masked, masked.text, ENGLISH, target_lang)
         if PLACEHOLDER_MISMATCH in issues or REPETITION in issues:   # gate: show original English
             return OutputResult(answer_en, answer_en, target_lang, issues,
                                 show_english_alongside=True, fell_back_to_english=True)
         score, show_en = None, False
         if self.cfg.round_trip:
-            back = " ".join(self.backend.translate(split_sentences(translated) or [translated],
+            back_in = to_ascii_digits(translated) if m.style == "digits" else translated
+            back = " ".join(self.backend.translate(split_sentences(back_in) or [back_in],
                                                    target_lang, ENGLISH))
             score = chrf_similarity(back, masked.text)
             if score < self.cfg.round_trip_min_chrf:
@@ -182,7 +188,7 @@ class TranslationLayer:
                 show_en = True
         if NUMBER_CHANGED in issues:
             show_en = True
-        final = self.masker.unmask(translated, masked, scheme_lang=target_lang,
+        final = m.unmask(translated, masked, scheme_lang=target_lang,
                                    group_money=self.cfg.indian_grouping)
         return OutputResult(final, answer_en, target_lang, issues, score, show_en)
 

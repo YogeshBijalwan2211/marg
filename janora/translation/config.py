@@ -15,6 +15,10 @@ class TranslationConfig:
     max_length: int = 256
     batch_size: int = 16
 
+    # retry tiers when the MT output loses a placeholder (content dropped from long inputs)
+    chunk_words: int = 12
+    small_chunk_words: int = 6
+
     # --- input pipeline ---------------------------------------------------
     transliterate_roman: bool = True      # Hinglish -> Devanagari before MT (ablate this!)
     langid_min_conf: float = 0.60         # below this -> ask the user to confirm language
@@ -28,3 +32,5 @@ class TranslationConfig:
     # Alphanumeric on purpose: MT models tend to copy unknown Latin tokens
     # verbatim but mangle brackets. Verify empirically with the masking ablation.
     placeholder_fmt: str = "ZX{kind}{idx}X"
+    placeholder_style: str = "alpha"          # input side (Indic -> English): "alpha" works (gate-fail 1.4%)
+    output_placeholder_style: str = "alpha"   # output side (English -> Indic): try "digits" if tokens get transliterated
