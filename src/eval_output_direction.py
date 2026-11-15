@@ -98,7 +98,7 @@ def main():
     ap.add_argument("--langs", nargs="*", default=TARGETS)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-round-trip", action="store_true")
-    ap.add_argument("--placeholders", default="alpha", choices=["alpha", "digits"],
+    ap.add_argument("--placeholders", default="digits", choices=["alpha", "digits"],
                     help="output-side placeholder style; 'digits' avoids models transliterating ZX..X tokens")
     ap.add_argument("--debug", metavar="LANG", help="e.g. ben_Beng: print the RAW masked source and RAW MT output "
                     "for the first answer (to see WHY a language falls back to English), then exit")

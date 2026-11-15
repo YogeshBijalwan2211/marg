@@ -29,7 +29,7 @@ GLOSS = Glossary([SchemeEntry("S1", "PM-KISAN", {"hin_Deva": ["पीएम क�
 
 
 def layer(table, **kw):
-    cfg = TranslationConfig(round_trip=kw.pop("round_trip", False))
+    cfg = TranslationConfig(round_trip=kw.pop("round_trip", False), output_placeholder_style="alpha")
     return TranslationLayer(cfg, GLOSS, FakeMT(table, **kw), LangID(use_indiclid=False), FakeXlit())
 
 

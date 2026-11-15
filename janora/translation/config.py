@@ -33,4 +33,4 @@ class TranslationConfig:
     # verbatim but mangle brackets. Verify empirically with the masking ablation.
     placeholder_fmt: str = "ZX{kind}{idx}X"
     placeholder_style: str = "alpha"          # input side (Indic -> English): "alpha" works (gate-fail 1.4%)
-    output_placeholder_style: str = "alpha"   # output side (English -> Indic): try "digits" if tokens get transliterated
+    output_placeholder_style: str = "digits"  # output side (English -> Indic): "alpha" tokens get transliterated by some models (Bengali)
