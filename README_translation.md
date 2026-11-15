@@ -36,15 +36,16 @@ Input side, 559 non-English queries, IndicTrans2 vs NLLB-200: see `results/trans
 (age 97.6 vs 95.8, income 94.9 vs 95.0, gate-fail 1.4% vs 3.2%).
 Offline (no MT model): language ID 96.1% val / 95.4% test; age 96.8%; income 93.1%.
 
-Output side (English -> language): Hindi, Assamese, Marathi, Nepali, Punjabi, Tamil, Telugu and Malayalam translated with
-round-trip chrF 69-82. Bengali, Gujarati, Kannada, Odia and Urdu first fell back to English because the model transliterated
-the Latin placeholder tokens (e.g. Bengali ZXN3X -> জেডএক্সএন3এক্স). Fix: numeric placeholder tokens (`output_placeholder_style="digits"`,
-now the default); verified on Bengali (all placeholders recovered). **Not yet re-measured for Gujarati, Kannada, Odia, Urdu**
-and the full output-side table has not been completed.
+Output side (English -> language), IndicTrans2, 4 answers per language from val-split schemes
+(see `results/translation_val_output_side.md`): all 13 target languages give fallback 0%, numbers 100%, script 100%.
+Round-trip chrF (Hindi, Bengali only so far): 81.9 / 81.4. Before the fix, Bengali, Gujarati, Kannada, Odia and Urdu fell back to
+English because the model transliterated the Latin placeholder tokens (Bengali ZXN3X -> জেডএক্সএন3এক্স); numeric placeholder tokens
+(`output_placeholder_style="digits"`, now the default) fixed it. The sample is small (n=4 per language): it shows the pipeline works,
+not how good the translations are.
 
 ## Known limitations
-* Output side: only the Bengali fix is verified; other languages need `eval_output_direction.py` re-run. A language that still
-  fails falls back to English (no wrong answer, but not in the user's language).
+* Output side: verified on only 4 answers per language and round-trip chrF for 2 languages; re-run with a larger `--n` before claiming quality.
+  If a translation cannot be verified the layer falls back to English (never a corrupted answer).
 * Malayalam produced a repetition loop in one answer; a repetition gate now retries then falls back to English.
 * ~6.5% of queries are non-Hindi languages typed in Latin letters; the built-in language ID calls them English (needs IndicLID + IndicXlit).
 * Scheme-name masking is exact-match (typo'd names in noisy queries are not masked); glossary has Hindi names only.
